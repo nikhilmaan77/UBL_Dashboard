@@ -182,7 +182,7 @@ st.markdown("""
 def load_data():
     df = pd.read_csv("UniversalBank.csv", encoding="utf-8-sig")
     # Clean column names (handle whitespace and Windows line endings)
-    df.columns = df.columns.str.strip().str.replace("\r", "")
+    df.columns = df.columns.str.strip().str.replace("\r", "", regex=False)
     # Fix negative experience values (data entry errors) → clip to 0
     df["Experience"] = df["Experience"].clip(lower=0)
     # Drop ID and ZIP Code (not predictive)
@@ -318,6 +318,106 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     st.markdown("---")
+
+    # ── DATA FILTERS ──
+    st.markdown(f'<div style="color:{COLORS["primary"]}; font-weight:700; font-size:1rem; '
+                f'margin-bottom:8px;">🔎 Data Filters</div>', unsafe_allow_html=True)
+    st.caption("Filters apply to Descriptive, Diagnostic & Prescriptive tabs. "
+               "Predictive model is trained on full data.")
+
+    # Age filter
+    age_range = st.slider("Age Range", int(df["Age"].min()), int(df["Age"].max()),
+                          (int(df["Age"].min()), int(df["Age"].max())), key="filter_age")
+
+    # Income filter
+    income_range = st.slider("Annual Income ($K)", int(df["Income"].min()), int(df["Income"].max()),
+                             (int(df["Income"].min()), int(df["Income"].max())), key="filter_income")
+
+    # CC Avg filter
+    cc_range = st.slider("Monthly CC Spend ($K)", float(df["CCAvg"].min()), float(df["CCAvg"].max()),
+                         (float(df["CCAvg"].min()), float(df["CCAvg"].max())), step=0.1, key="filter_cc_spend")
+
+    # Education filter
+    edu_options = {"All": [1, 2, 3], "Undergraduate": [1], "Graduate": [2], "Advanced/Professional": [3]}
+    edu_filter = st.multiselect("Education Level",
+                                options=["Undergraduate", "Graduate", "Advanced/Professional"],
+                                default=["Undergraduate", "Graduate", "Advanced/Professional"])
+    edu_values = []
+    for e in edu_filter:
+        edu_values.extend(edu_options[e])
+    if not edu_values:
+        edu_values = [1, 2, 3]  # fallback to all
+
+    # Family size filter
+    family_filter = st.multiselect("Family Size",
+                                   options=[1, 2, 3, 4],
+                                   default=[1, 2, 3, 4],
+                                   format_func=lambda x: f"Family of {x}")
+    if not family_filter:
+        family_filter = [1, 2, 3, 4]  # fallback
+
+    # Loan status filter
+    loan_filter = st.radio("Personal Loan Status", ["All", "Accepted Only", "Declined Only"],
+                           index=0, horizontal=True)
+
+    # Product holdings filters
+    st.markdown(f'<div style="color:{COLORS["text"]}; font-size:0.85rem; font-weight:600; '
+                f'margin: 8px 0 4px 0;">Product Holdings</div>', unsafe_allow_html=True)
+    pf1, pf2 = st.columns(2)
+    with pf1:
+        sec_filter = st.selectbox("Securities Acct", ["All", "Yes", "No"], index=0, key="filter_sec")
+        cd_filter = st.selectbox("CD Account", ["All", "Yes", "No"], index=0, key="filter_cd")
+    with pf2:
+        online_filter = st.selectbox("Online Banking", ["All", "Yes", "No"], index=0, key="filter_online")
+        cc_filter = st.selectbox("Credit Card", ["All", "Yes", "No"], index=0, key="filter_cc")
+
+    st.markdown("---")
+
+    # ── APPLY FILTERS ──
+    df_filtered = df.copy()
+    df_filtered = df_filtered[
+        (df_filtered["Age"] >= age_range[0]) & (df_filtered["Age"] <= age_range[1]) &
+        (df_filtered["Income"] >= income_range[0]) & (df_filtered["Income"] <= income_range[1]) &
+        (df_filtered["CCAvg"] >= cc_range[0]) & (df_filtered["CCAvg"] <= cc_range[1]) &
+        (df_filtered["Education"].isin(edu_values)) &
+        (df_filtered["Family"].isin(family_filter))
+    ]
+
+    if loan_filter == "Accepted Only":
+        df_filtered = df_filtered[df_filtered[TARGET] == 1]
+    elif loan_filter == "Declined Only":
+        df_filtered = df_filtered[df_filtered[TARGET] == 0]
+
+    binary_map = {"All": None, "Yes": 1, "No": 0}
+    if binary_map[sec_filter] is not None:
+        df_filtered = df_filtered[df_filtered["Securities Account"] == binary_map[sec_filter]]
+    if binary_map[cd_filter] is not None:
+        df_filtered = df_filtered[df_filtered["CD Account"] == binary_map[cd_filter]]
+    if binary_map[online_filter] is not None:
+        df_filtered = df_filtered[df_filtered["Online"] == binary_map[online_filter]]
+    if binary_map[cc_filter] is not None:
+        df_filtered = df_filtered[df_filtered["CreditCard"] == binary_map[cc_filter]]
+
+    # Filter summary
+    pct = len(df_filtered) / len(df) * 100
+    filter_color = COLORS["success"] if pct > 50 else COLORS["accent"] if pct > 20 else COLORS["danger"]
+    st.markdown(f"""
+    <div style="background:{COLORS['bg_card']}; border:1px solid {filter_color}33;
+                border-radius:8px; padding:12px; text-align:center; margin-top:4px;">
+        <div style="font-size:1.5rem; font-weight:800; color:{filter_color};">
+            {len(df_filtered):,} / {len(df):,}
+        </div>
+        <div style="font-size:0.78rem; color:{COLORS['text_muted']};">
+            customers selected ({pct:.1f}%)
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Reset button
+    if st.button("🔄 Reset All Filters", use_container_width=True):
+        st.rerun()
+
+    st.markdown("---")
     st.markdown(f"""
     <div style="color:{COLORS['text_muted']}; font-size:0.78rem;">
         <b>Analytics Layers</b><br>
@@ -363,26 +463,30 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.caption("*Understanding the composition and profile of Universal Bank's customer base*")
 
+    # Filter active indicator
+    if len(df_filtered) < len(df):
+        st.info(f"🔎 Filters active — showing **{len(df_filtered):,}** of {len(df):,} customers ({len(df_filtered)/len(df)*100:.1f}%)")
+
     # ── KPI Row ──
     section_header("Key Performance Indicators")
     k1, k2, k3, k4, k5 = st.columns(5)
-    total = len(df)
-    accepted = df[TARGET].sum()
-    acc_rate = accepted / total * 100
-    avg_income = df["Income"].mean()
-    avg_cc = df["CCAvg"].mean()
-    avg_age = df["Age"].mean()
+    total = len(df_filtered)
+    accepted = df_filtered[TARGET].sum()
+    acc_rate = accepted / total * 100 if total > 0 else 0
+    avg_income = df_filtered["Income"].mean() if total > 0 else 0
+    avg_cc = df_filtered["CCAvg"].mean() if total > 0 else 0
+    avg_age = df_filtered["Age"].mean() if total > 0 else 0
 
     with k1:
-        st.markdown(kpi_card(f"{total:,}", "Total Customers", "Full dataset"), unsafe_allow_html=True)
+        st.markdown(kpi_card(f"{total:,}", "Total Customers", "Filtered dataset"), unsafe_allow_html=True)
     with k2:
-        st.markdown(kpi_card(f"{acc_rate:.1f}%", "Loan Acceptance", f"{accepted} of {total}"), unsafe_allow_html=True)
+        st.markdown(kpi_card(f"{acc_rate:.1f}%", "Loan Acceptance", f"{int(accepted)} of {total}"), unsafe_allow_html=True)
     with k3:
         st.markdown(kpi_card(f"${avg_income:.1f}K", "Avg Income", "Annual (in $000)"), unsafe_allow_html=True)
     with k4:
         st.markdown(kpi_card(f"${avg_cc:.1f}K", "Avg CC Spend", "Monthly (in $000)"), unsafe_allow_html=True)
     with k5:
-        st.markdown(kpi_card(f"{avg_age:.0f} yrs", "Avg Age", f"Range: {df['Age'].min()}–{df['Age'].max()}"), unsafe_allow_html=True)
+        st.markdown(kpi_card(f"{avg_age:.0f} yrs", "Avg Age", f"Range: {int(df_filtered['Age'].min()) if total > 0 else 0}–{int(df_filtered['Age'].max()) if total > 0 else 0}"), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -392,9 +496,9 @@ with tab1:
 
     with cont_col1:
         fig = make_subplots(rows=2, cols=1, subplot_titles=("Age Distribution", "Income Distribution ($000)"))
-        fig.add_trace(go.Histogram(x=df["Age"], nbinsx=30, marker_color=COLORS["primary"],
+        fig.add_trace(go.Histogram(x=df_filtered["Age"], nbinsx=30, marker_color=COLORS["primary"],
                                    opacity=0.85, name="Age"), row=1, col=1)
-        fig.add_trace(go.Histogram(x=df["Income"], nbinsx=40, marker_color=COLORS["secondary"],
+        fig.add_trace(go.Histogram(x=df_filtered["Income"], nbinsx=40, marker_color=COLORS["secondary"],
                                    opacity=0.85, name="Income"), row=2, col=1)
         fig = style_plotly(fig, height=500)
         fig.update_layout(showlegend=False)
@@ -402,9 +506,9 @@ with tab1:
 
     with cont_col2:
         fig = make_subplots(rows=2, cols=1, subplot_titles=("Monthly CC Spending ($000)", "Mortgage Value ($000)"))
-        fig.add_trace(go.Histogram(x=df["CCAvg"], nbinsx=30, marker_color=COLORS["accent"],
+        fig.add_trace(go.Histogram(x=df_filtered["CCAvg"], nbinsx=30, marker_color=COLORS["accent"],
                                    opacity=0.85, name="CCAvg"), row=1, col=1)
-        fig.add_trace(go.Histogram(x=df["Mortgage"], nbinsx=40, marker_color=COLORS["success"],
+        fig.add_trace(go.Histogram(x=df_filtered["Mortgage"], nbinsx=40, marker_color=COLORS["success"],
                                    opacity=0.85, name="Mortgage"), row=2, col=1)
         fig = style_plotly(fig, height=500)
         fig.update_layout(showlegend=False)
@@ -415,7 +519,7 @@ with tab1:
     cat1, cat2 = st.columns(2)
 
     with cat1:
-        edu_counts = df["Education_Label"].value_counts().reset_index()
+        edu_counts = df_filtered["Education_Label"].value_counts().reset_index()
         edu_counts.columns = ["Education", "Count"]
         fig = px.bar(edu_counts, x="Education", y="Count",
                      color="Education",
@@ -426,7 +530,7 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
 
     with cat2:
-        fam_counts = df["Family"].value_counts().sort_index().reset_index()
+        fam_counts = df_filtered["Family"].value_counts().sort_index().reset_index()
         fam_counts.columns = ["Family Size", "Count"]
         fam_counts["Family Size"] = fam_counts["Family Size"].astype(str)
         fig = px.bar(fam_counts, x="Family Size", y="Count",
@@ -442,10 +546,10 @@ with tab1:
     binary_data = pd.DataFrame({
         "Product": ["Securities Account", "CD Account", "Online Banking", "Credit Card"],
         "Adoption Rate (%)": [
-            df["Securities Account"].mean() * 100,
-            df["CD Account"].mean() * 100,
-            df["Online"].mean() * 100,
-            df["CreditCard"].mean() * 100,
+            df_filtered["Securities Account"].mean() * 100 if total > 0 else 0,
+            df_filtered["CD Account"].mean() * 100 if total > 0 else 0,
+            df_filtered["Online"].mean() * 100 if total > 0 else 0,
+            df_filtered["CreditCard"].mean() * 100 if total > 0 else 0,
         ]
     })
     fig = px.bar(binary_data, x="Product", y="Adoption Rate (%)",
@@ -458,13 +562,18 @@ with tab1:
     fig = style_plotly(fig, 400)
     st.plotly_chart(fig, use_container_width=True)
 
-    insight(
-        "📊 <b>Key Descriptive Takeaways:</b> The customer base is predominantly middle-aged "
-        "(mean age ~45 years) with an average annual income of ~$73K. Online banking has the highest "
-        f"adoption at {df['Online'].mean()*100:.1f}%, while CD accounts have the lowest at "
-        f"{df['CD Account'].mean()*100:.1f}%. Personal loan acceptance is highly imbalanced at "
-        f"only {acc_rate:.1f}%, making it a classic rare-event prediction problem."
-    )
+    if total > 0:
+        insight(
+            f"📊 <b>Key Descriptive Takeaways ({len(df_filtered):,} customers):</b> "
+            f"Average age is {avg_age:.0f} years with average annual income of ${avg_income:.1f}K. "
+            f"Online banking adoption: {df_filtered['Online'].mean()*100:.1f}%, "
+            f"CD account adoption: {df_filtered['CD Account'].mean()*100:.1f}%. "
+            f"Personal loan acceptance rate: {acc_rate:.1f}%."
+        )
+    else:
+        insight(
+            "📊 <b>No customers match the current filter criteria.</b> Please adjust the filters in the sidebar."
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -473,9 +582,13 @@ with tab1:
 with tab2:
     st.caption("*Uncovering the drivers behind personal loan acceptance and product associations*")
 
+    # Filter active indicator
+    if len(df_filtered) < len(df):
+        st.info(f"🔎 Filters active — showing **{len(df_filtered):,}** of {len(df):,} customers ({len(df_filtered)/len(df)*100:.1f}%)")
+
     # ── Correlation Heatmap ──
     section_header("Feature Correlation Matrix")
-    corr = df[FEATURE_COLS + [TARGET]].corr()
+    corr = df_filtered[FEATURE_COLS + [TARGET]].corr()
     fig = go.Figure(data=go.Heatmap(
         z=corr.values,
         x=corr.columns,
@@ -500,7 +613,7 @@ with tab2:
     # ── Bivariate: Income vs CCAvg by Loan Status ──
     section_header("Bivariate Analysis — Income vs Credit Card Spending")
     loan_labels = {0: "Declined", 1: "Accepted"}
-    df_scatter = df.copy()
+    df_scatter = df_filtered.copy()
     df_scatter["Loan Status"] = df_scatter[TARGET].map(loan_labels)
 
     fig = px.scatter(
@@ -568,35 +681,41 @@ with tab2:
     ct1, ct2 = st.columns(2)
 
     with ct1:
-        ct_edu = pd.crosstab(df["Education_Label"], df[TARGET], normalize="index") * 100
-        ct_edu.columns = ["Declined %", "Accepted %"]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=ct_edu.index, y=ct_edu["Declined %"], name="Declined",
-                             marker_color=COLORS["loan_no"], opacity=0.85))
-        fig.add_trace(go.Bar(x=ct_edu.index, y=ct_edu["Accepted %"], name="Accepted",
-                             marker_color=COLORS["loan_yes"], opacity=0.85))
-        fig.update_layout(barmode="stack", title="Loan Acceptance by Education Level",
-                          yaxis_title="Percentage (%)")
-        fig = style_plotly(fig, 400)
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            ct_edu = pd.crosstab(df_filtered["Education_Label"], df_filtered[TARGET], normalize="index") * 100
+            ct_edu.columns = ["Declined %", "Accepted %"]
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=ct_edu.index, y=ct_edu["Declined %"], name="Declined",
+                                 marker_color=COLORS["loan_no"], opacity=0.85))
+            fig.add_trace(go.Bar(x=ct_edu.index, y=ct_edu["Accepted %"], name="Accepted",
+                                 marker_color=COLORS["loan_yes"], opacity=0.85))
+            fig.update_layout(barmode="stack", title="Loan Acceptance by Education Level",
+                              yaxis_title="Percentage (%)")
+            fig = style_plotly(fig, 400)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            st.warning("Insufficient data for cross-tabulation. Adjust filters to include both loan classes.")
 
     with ct2:
-        ct_cd = pd.crosstab(df["CD Account"], df[TARGET], normalize="index") * 100
-        ct_cd.columns = ["Declined %", "Accepted %"]
-        ct_cd.index = ["No CD Account", "Has CD Account"]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=ct_cd.index, y=ct_cd["Declined %"], name="Declined",
-                             marker_color=COLORS["loan_no"], opacity=0.85))
-        fig.add_trace(go.Bar(x=ct_cd.index, y=ct_cd["Accepted %"], name="Accepted",
-                             marker_color=COLORS["loan_yes"], opacity=0.85))
-        fig.update_layout(barmode="stack", title="Loan Acceptance by CD Account Status",
-                          yaxis_title="Percentage (%)")
-        fig = style_plotly(fig, 400)
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            ct_cd = pd.crosstab(df_filtered["CD Account"], df_filtered[TARGET], normalize="index") * 100
+            ct_cd.columns = ["Declined %", "Accepted %"]
+            ct_cd.index = ["No CD Account", "Has CD Account"]
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=ct_cd.index, y=ct_cd["Declined %"], name="Declined",
+                                 marker_color=COLORS["loan_no"], opacity=0.85))
+            fig.add_trace(go.Bar(x=ct_cd.index, y=ct_cd["Accepted %"], name="Accepted",
+                                 marker_color=COLORS["loan_yes"], opacity=0.85))
+            fig.update_layout(barmode="stack", title="Loan Acceptance by CD Account Status",
+                              yaxis_title="Percentage (%)")
+            fig = style_plotly(fig, 400)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            st.warning("Insufficient data for cross-tabulation. Adjust filters to include both loan classes.")
 
     # ── Education × Family Heatmap ──
     section_header("Loan Acceptance Rate — Education × Family Size")
-    ct_ef = pd.crosstab([df["Education_Label"], df["Family"]], df[TARGET], normalize="index")
+    ct_ef = pd.crosstab([df_filtered["Education_Label"], df_filtered["Family"]], df_filtered[TARGET], normalize="index")
     if 1 in ct_ef.columns:
         ct_pivot = ct_ef[1].unstack(level=0) * 100
     else:
@@ -621,10 +740,14 @@ with tab2:
     section_header("Association Rule Mining — Cross-Sell Opportunities")
     st.caption("Using Apriori algorithm on product holdings (Securities, CD, Online, CreditCard)")
 
-    basket_df = df[BINARY_COLS].astype(bool)
-    frequent_items = apriori(basket_df, min_support=0.02, use_colnames=True)
-    rules = association_rules(frequent_items, metric="lift", min_threshold=1.0,
-                              num_itemsets=len(frequent_items))
+    try:
+        basket_df = df_filtered[BINARY_COLS].astype(bool)
+        frequent_items = apriori(basket_df, min_support=0.02, use_colnames=True)
+        rules = association_rules(frequent_items, metric="lift", min_threshold=1.0,
+                                  num_itemsets=len(frequent_items))
+    except Exception:
+        frequent_items = pd.DataFrame()
+        rules = pd.DataFrame()
 
     if len(rules) > 0:
         rules_display = rules[["antecedents", "consequents", "support", "confidence", "lift"]].copy()
@@ -868,7 +991,6 @@ with tab3:
 
     cust = X_shap.iloc[sample_idx]
     cust_shap = shap_vals[sample_idx]
-    base_val = results["explainer"].expected_value
 
     waterfall_df = pd.DataFrame({
         "Feature": [f"{f} = {cust[f]:.1f}" for f in FEATURE_COLS],
@@ -898,21 +1020,26 @@ with tab3:
 
     wif1, wif2, wif3, wif4 = st.columns(4)
     with wif1:
-        wif_age = st.slider("Age", 23, 67, 40)
-        wif_exp = st.slider("Experience (yrs)", 0, 43, 15)
+        wif_age = st.slider("Age", 23, 67, 40, key="wif_age")
+        wif_exp = st.slider("Experience (yrs)", 0, 43, 15, key="wif_exp")
         wif_edu = st.selectbox("Education", [1, 2, 3],
-                               format_func=lambda x: {1: "Undergraduate", 2: "Graduate", 3: "Advanced"}[x])
+                               format_func=lambda x: {1: "Undergraduate", 2: "Graduate", 3: "Advanced"}[x],
+                               key="wif_edu")
     with wif2:
-        wif_income = st.slider("Annual Income ($K)", 8, 224, 80)
-        wif_ccavg = st.slider("Monthly CC Spend ($K)", 0.0, 10.0, 2.0, step=0.1)
-        wif_family = st.selectbox("Family Size", [1, 2, 3, 4])
+        wif_income = st.slider("Annual Income ($K)", 8, 224, 80, key="wif_income")
+        wif_ccavg = st.slider("Monthly CC Spend ($K)", 0.0, 10.0, 2.0, step=0.1, key="wif_ccavg")
+        wif_family = st.selectbox("Family Size", [1, 2, 3, 4], key="wif_family")
     with wif3:
-        wif_mortgage = st.slider("Mortgage ($K)", 0, 635, 0)
-        wif_sec = st.selectbox("Securities Account", [0, 1], format_func=lambda x: "Yes" if x else "No")
-        wif_cd = st.selectbox("CD Account", [0, 1], format_func=lambda x: "Yes" if x else "No")
+        wif_mortgage = st.slider("Mortgage ($K)", 0, 635, 0, key="wif_mortgage")
+        wif_sec = st.selectbox("Securities Account", [0, 1], format_func=lambda x: "Yes" if x else "No",
+                               key="wif_sec")
+        wif_cd = st.selectbox("CD Account", [0, 1], format_func=lambda x: "Yes" if x else "No",
+                              key="wif_cd")
     with wif4:
-        wif_online = st.selectbox("Online Banking", [0, 1], format_func=lambda x: "Yes" if x else "No")
-        wif_cc = st.selectbox("Credit Card", [0, 1], format_func=lambda x: "Yes" if x else "No")
+        wif_online = st.selectbox("Online Banking", [0, 1], format_func=lambda x: "Yes" if x else "No",
+                                  key="wif_online")
+        wif_cc = st.selectbox("Credit Card", [0, 1], format_func=lambda x: "Yes" if x else "No",
+                              key="wif_cc")
 
     wif_input = pd.DataFrame([[wif_age, wif_exp, wif_income, wif_family, wif_ccavg,
                                 wif_edu, wif_mortgage, wif_sec, wif_cd, wif_online, wif_cc]],
@@ -966,49 +1093,63 @@ with tab3:
 with tab4:
     st.caption("*Translating predictive insights into actionable campaign strategies and cross-sell recommendations*")
 
+    # Filter active indicator
+    if len(df_filtered) < len(df):
+        st.info(f"🔎 Filters active — showing **{len(df_filtered):,}** of {len(df):,} customers ({len(df_filtered)/len(df)*100:.1f}%)")
+
     # ── Ideal Target Customer Profile ──
     section_header("Ideal Target Customer Profile")
 
-    acceptors = df[df[TARGET] == 1]
-    non_acceptors = df[df[TARGET] == 0]
+    acceptors = df_filtered[df_filtered[TARGET] == 1]
+    non_acceptors = df_filtered[df_filtered[TARGET] == 0]
+
+    def safe_mean(series, pct=False):
+        """Return formatted mean or 'N/A' if series is empty."""
+        if len(series) == 0:
+            return "N/A"
+        val = series.mean()
+        return f"{val*100:.1f}%" if pct else f"{val:.1f}"
 
     profile_data = {
         "Attribute": ["Income ($K)", "CC Spend/Mo ($K)", "Age (yrs)", "Mortgage ($K)",
                       "Has CD Account (%)", "Education: Advanced (%)", "Family Size (avg)"],
         "Loan Acceptors": [
-            f"${acceptors['Income'].mean():.1f}K",
-            f"${acceptors['CCAvg'].mean():.1f}K",
-            f"{acceptors['Age'].mean():.1f}",
-            f"${acceptors['Mortgage'].mean():.1f}K",
-            f"{acceptors['CD Account'].mean()*100:.1f}%",
-            f"{(acceptors['Education']==3).mean()*100:.1f}%",
-            f"{acceptors['Family'].mean():.1f}",
+            f"${safe_mean(acceptors['Income'])}K",
+            f"${safe_mean(acceptors['CCAvg'])}K",
+            safe_mean(acceptors['Age']),
+            f"${safe_mean(acceptors['Mortgage'])}K",
+            safe_mean(acceptors['CD Account'], pct=True),
+            safe_mean((acceptors['Education']==3).astype(float), pct=True),
+            safe_mean(acceptors['Family']),
         ],
         "Non-Acceptors": [
-            f"${non_acceptors['Income'].mean():.1f}K",
-            f"${non_acceptors['CCAvg'].mean():.1f}K",
-            f"{non_acceptors['Age'].mean():.1f}",
-            f"${non_acceptors['Mortgage'].mean():.1f}K",
-            f"{non_acceptors['CD Account'].mean()*100:.1f}%",
-            f"{(non_acceptors['Education']==3).mean()*100:.1f}%",
-            f"{non_acceptors['Family'].mean():.1f}",
+            f"${safe_mean(non_acceptors['Income'])}K",
+            f"${safe_mean(non_acceptors['CCAvg'])}K",
+            safe_mean(non_acceptors['Age']),
+            f"${safe_mean(non_acceptors['Mortgage'])}K",
+            safe_mean(non_acceptors['CD Account'], pct=True),
+            safe_mean((non_acceptors['Education']==3).astype(float), pct=True),
+            safe_mean(non_acceptors['Family']),
         ]
     }
     st.dataframe(pd.DataFrame(profile_data), use_container_width=True, hide_index=True)
 
-    insight(
-        "🎯 <b>Target Profile:</b> The ideal personal loan prospect earns >$100K annually, "
-        f"spends >${acceptors['CCAvg'].quantile(0.25):.1f}K/month on credit cards, holds a CD account, "
-        "and has a Graduate or Advanced degree. These customers are 5-10× more likely to accept a loan.",
-        "success"
-    )
+    if len(acceptors) > 0 and len(non_acceptors) > 0:
+        insight(
+            "🎯 <b>Target Profile:</b> The ideal personal loan prospect earns >$100K annually, "
+            f"spends >${acceptors['CCAvg'].quantile(0.25):.1f}K/month on credit cards, holds a CD account, "
+            "and has a Graduate or Advanced degree. These customers are 5-10× more likely to accept a loan.",
+            "success"
+        )
+    else:
+        insight("🎯 <b>Note:</b> Adjust filters to include both loan acceptors and non-acceptors for full profile comparison.", "warn")
 
     # ── Customer Segmentation by Predicted Probability ──
     section_header("Customer Segmentation by Predicted Loan Probability")
 
-    X_all = df[FEATURE_COLS]
+    X_all = df_filtered[FEATURE_COLS]
     all_probs = results["model"].predict_proba(X_all)[:, 1]
-    df_seg = df.copy()
+    df_seg = df_filtered.copy()
     df_seg["Pred_Prob"] = all_probs
     df_seg["Segment"] = pd.cut(all_probs,
                                 bins=[0, 0.1, 0.3, 0.5, 0.7, 1.0],
@@ -1051,8 +1192,8 @@ with tab4:
     radar_acc = []
     radar_nonacc = []
     for f in radar_features:
-        fmin, fmax = df[f].min(), df[f].max()
-        if fmax > fmin:
+        fmin, fmax = df_filtered[f].min(), df_filtered[f].max()
+        if fmax > fmin and len(acceptors) > 0 and len(non_acceptors) > 0:
             radar_acc.append((acceptors[f].mean() - fmin) / (fmax - fmin))
             radar_nonacc.append((non_acceptors[f].mean() - fmin) / (fmax - fmin))
         else:
@@ -1122,17 +1263,20 @@ with tab4:
         "success"
     )
 
+    acc_adv_pct = (acceptors['Education']==3).mean()*100 if len(acceptors) > 0 else 0
+    nonacc_adv_pct = (non_acceptors['Education']==3).mean()*100 if len(non_acceptors) > 0 else 0
     insight(
         "📋 <b>Recommendation 3 — Education-Based Segmentation:</b> Customers with Advanced/Professional "
-        f"degrees show {(acceptors['Education']==3).mean()*100:.1f}% representation among acceptors vs "
-        f"{(non_acceptors['Education']==3).mean()*100:.1f}% among non-acceptors. Partner with professional "
+        f"degrees show {acc_adv_pct:.1f}% representation among acceptors vs "
+        f"{nonacc_adv_pct:.1f}% among non-acceptors. Partner with professional "
         "associations (CPA, medical, legal) for co-branded loan offers.",
         "success"
     )
 
+    online_pct = df_filtered['Online'].mean()*100 if len(df_filtered) > 0 else 0
     insight(
         "📋 <b>Recommendation 4 — Digital Cross-Sell Pipeline:</b> Online banking users represent "
-        f"{df['Online'].mean()*100:.1f}% of the base. Build an in-app loan pre-qualification tool "
+        f"{online_pct:.1f}% of the base. Build an in-app loan pre-qualification tool "
         "that uses the trained model to show eligible customers their predicted approval probability "
         "in real-time, creating a frictionless conversion funnel.",
         "info"
